@@ -31,10 +31,6 @@ export class CommentResponseDto {
     lastReplyAt: Date | null;
 
     @Expose()
-    @Transform(({ value }) => value ?? 0)
-    depth: number;
-
-    @Expose()
     @Type(() => UserResponseDto)
     @Transform(({ obj }) => obj.isDeleted ? null : obj.user)
     user: UserResponseDto | null;
@@ -70,10 +66,6 @@ export class UserResponseDto {
 
     @Expose()
     commentCount: number;
-
-    @Expose()
-    @Type(() => Date)
-    lastActiveAt: Date;
 
     // this is to exclude sensitive data that might be loaded
     @Exclude()
