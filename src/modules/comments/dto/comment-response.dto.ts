@@ -1,5 +1,51 @@
 import { Expose, Transform, Type, Exclude } from 'class-transformer';
 
+
+// these are like helper dtos. im adding them at the start to avoid late initialization errors
+export class ParentUserDto {
+    @Expose()
+    id: string;
+
+    @Expose()
+    username: string;
+}
+
+export class ParentCommentDto {
+    @Expose()
+    id: string;
+
+    @Expose()
+    text: string;
+
+    @Expose()
+    @Type(() => ParentUserDto)
+    user: ParentUserDto;
+
+    @Expose()
+    @Type(() => Date)
+    createdAt: Date;
+}
+
+// this represents the user who made the comment
+export class UserResponseDto {
+    @Expose()
+    id: string;
+
+    @Expose()
+    username: string;
+
+    @Expose()
+    commentCount: number;
+
+    // this is to exclude sensitive data that might be loaded
+    @Exclude()
+    passwordHash?: string;
+
+    @Exclude()
+    email?: string;
+}
+
+// this is the main dto that uses the above dependencies
 export class CommentResponseDto {
     @Expose() //expose decorator is used to specify that the property should be exposed in the response
     id: string;
@@ -54,47 +100,4 @@ export class CommentResponseDto {
     @Type(() => CommentResponseDto)
     @Transform(({ value }) => value || [])
     replies: CommentResponseDto[];
-}
-
-// this represents the user who made the comment
-export class UserResponseDto {
-    @Expose()
-    id: string;
-
-    @Expose()
-    username: string;
-
-    @Expose()
-    commentCount: number;
-
-    // this is to exclude sensitive data that might be loaded
-    @Exclude()
-    passwordHash?: string;
-
-    @Exclude()
-    email?: string;
-}
-
-export class ParentCommentDto {
-    @Expose()
-    id: string;
-
-    @Expose()
-    text: string;
-
-    @Expose()
-    @Type(() => ParentUserDto)
-    user: ParentUserDto;
-
-    @Expose()
-    @Type(() => Date)
-    createdAt: Date;
-}
-
-export class ParentUserDto {
-    @Expose()
-    id: string;
-
-    @Expose()
-    username: string;
 }
