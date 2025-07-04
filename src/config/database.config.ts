@@ -1,3 +1,6 @@
+/* Disclaimer: I actually dont have prior nestJS experience, I'm learning as I go. So 
+                I will be commenting regularly to explain my thought process.*/
+
 import { registerAs } from '@nestjs/config';
 import { TypeOrmModuleOptions } from '@nestjs/typeorm';
 
