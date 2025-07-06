@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException, UnauthorizedException, BadRequestException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, EntityManager} from 'typeorm';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { Comment } from '../../entities/comment.entity';
 import { User } from '../../entities/user.entity';
 import { CreateCommentDto } from './dto/create-comment.dto';
@@ -23,6 +24,7 @@ export class commentsService {
     @InjectRepository(User)
     private userRepository: Repository<User>,
     private entityManager: EntityManager,
+    private eventEmitter: EventEmitter2,
   ) {}
 
   private statsCache: { data: CommentStatsDto; timestamp: number } | null = null;
@@ -117,10 +119,27 @@ export class commentsService {
         // Invalidate cache since stats changed
         this.statsCache = null;
 
-        return plainToClass(CommentResponseDto, completeComment, {
+        const result = plainToClass(CommentResponseDto, completeComment, {
           excludeExtraneousValues: true,
         });
-      });
+
+
+        this.eventEmitter.emit('comment.created', {
+          comment: result,
+          parentId: createCommentDto.parentId,
+        });
+
+
+        if (createCommentDto.parentId && parentComment) {
+          this.eventEmitter.emit('comment.reply_count_updated', {
+            commentId: createCommentDto.parentId,
+            replyCount: parentComment.replyCount + 1,
+            totalReplies: parentComment.totalReplies + 1,
+          });
+        }
+
+        return result;
+        });
     } catch (error) {
       // Handle known business logic errors
       if (error instanceof NotFoundException || 
@@ -306,9 +325,16 @@ export class commentsService {
         .where('comment.id = :id', { id })
         .getOne();
 
-      return plainToClass(CommentResponseDto, updatedComment, {
+      const result = plainToClass(CommentResponseDto, updatedComment, {
         excludeExtraneousValues: true,
       });
+
+
+      this.eventEmitter.emit('comment.updated', {
+        comment: result,
+      });
+
+      return result;
     } catch (error) {
 
       if (error instanceof NotFoundException || 
@@ -394,6 +420,21 @@ export class commentsService {
 
 
         this.statsCache = null;
+
+
+        this.eventEmitter.emit('comment.deleted', {
+          commentId: id,
+          parentId: comment.parentId,
+        });
+
+
+        if (comment.parentId) {
+          this.eventEmitter.emit('comment.reply_count_updated', {
+            commentId: comment.parentId,
+            replyCount: Math.max(0, comment.replyCount - 1),
+            totalReplies: Math.max(0, comment.totalReplies - 1),
+          });
+        }
       });
     } catch (error) {
 
