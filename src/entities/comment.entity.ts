@@ -69,6 +69,6 @@ export class Comment {
     replies: Comment[];
 
     // this is the relationship with the notifications (one comment can have many notifications)
-    @OneToMany(() => Notification, notification => notification.comment)
+    @OneToMany(() => Notification, notification => notification.relatedComment)
     notifications: Notification[];
 }
