@@ -12,6 +12,7 @@ import {
   HttpStatus,
   HttpException,
 } from '@nestjs/common';
+import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { NotificationsService } from './notification.service';
 import { NotificationsGateway } from './notifications.gateway';
@@ -20,6 +21,7 @@ import { UpdateNotificationDto, BulkUpdateNotificationsDto } from './dto/update-
 import { NotificationQueryDto } from './dto/notification-query.dto';
 import { NotificationResponseDto } from './dto/notification-response.dto';
 import { PaginatedNotificationsResponseDto } from './dto/paginated-notifications-response.dto';
+import { customRateLimits } from '../../config/throttler.config';
 
 @Controller('notifications')
 @UseGuards(JwtAuthGuard)
@@ -29,8 +31,10 @@ export class NotificationsController {
     private readonly notificationsGateway: NotificationsGateway,
   ) {}
 
-  
   @Post()
+  @Throttle({ 
+    default: customRateLimits.notifications.create
+  })
   async createNotification(
     @Body() createNotificationDto: CreateNotificationDto,
     @Request() req: any,
@@ -52,7 +56,6 @@ export class NotificationsController {
     }
   }
 
-  
   @Get()
   async getUserNotifications(
     @Query() query: NotificationQueryDto,
@@ -68,7 +71,6 @@ export class NotificationsController {
     }
   }
 
-  
   @Get('unread-count')
   async getUnreadCount(@Request() req: any): Promise<{ count: number }> {
     try {
@@ -82,7 +84,6 @@ export class NotificationsController {
     }
   }
 
-  
   @Get('connection-status')
   async getConnectionStatus(@Request() req: any): Promise<{ connected: boolean }> {
     try {
@@ -96,7 +97,6 @@ export class NotificationsController {
     }
   }
 
-  
   @Put(':id')
   async updateNotification(
     @Param('id') notificationId: string,
@@ -120,7 +120,6 @@ export class NotificationsController {
     }
   }
 
-  
   @Put(':id/read')
   async markAsRead(
     @Param('id') notificationId: string,
@@ -143,7 +142,6 @@ export class NotificationsController {
     }
   }
 
-  
   @Put(':id/unread')
   async markAsUnread(
     @Param('id') notificationId: string,
@@ -167,6 +165,9 @@ export class NotificationsController {
   }
 
   @Put('bulk')
+  @Throttle({ 
+    default: customRateLimits.notifications.markRead
+  })
   async bulkUpdate(
     @Body() bulkUpdateDto: BulkUpdateNotificationsDto,
     @Request() req: any,
@@ -184,8 +185,10 @@ export class NotificationsController {
     }
   }
 
-  
   @Put('mark-all-read')
+  @Throttle({ 
+    default: customRateLimits.notifications.markRead
+  })
   async markAllAsRead(@Request() req: any): Promise<{ affected: number; message: string }> {
     try {
       return await this.notificationsService.bulkUpdateNotifications(
@@ -219,7 +222,6 @@ export class NotificationsController {
     }
   }
 
-  
   @Delete('read')
   async deleteAllRead(@Request() req: any): Promise<{ affected: number; message: string }> {
     try {
@@ -235,7 +237,6 @@ export class NotificationsController {
     }
   }
 
-  
   @Delete('expired')
   async deleteExpired(@Request() req: any): Promise<{ affected: number; message: string }> {
     try {
@@ -251,7 +252,6 @@ export class NotificationsController {
     }
   }
 
-  
   @Get('stats')
   async getStats(): Promise<{
     connectedClients: number;

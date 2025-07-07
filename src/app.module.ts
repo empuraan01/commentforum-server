@@ -8,6 +8,9 @@ import { CommentsModule } from './modules/comments/comments.module';
 import { UsersModule } from './modules/users/users.module';
 import { NotificationsModule } from './modules/notifications/notifications.module';
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { APP_GUARD } from '@nestjs/core';
+import { throttlerConfig } from './config/throttler.config';
 
 @Module({
   imports: [
@@ -16,6 +19,7 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
       envFilePath: '.env',
       cache: true,
     }),
+    ThrottlerModule.forRoot(throttlerConfig),
     DatabaseModule,
     AuthModule,
     CommentsModule,
@@ -24,6 +28,12 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
     EventEmitterModule.forRoot(),
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    {
+      provide: APP_GUARD,
+      useClass: ThrottlerGuard,
+    },
+  ],
 })
 export class AppModule {}

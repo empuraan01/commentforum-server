@@ -14,6 +14,8 @@ import { OnEvent } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
 import { NotificationResponseDto } from './dto/notification-response.dto';
 import { NotificationsService } from './notification.service';
+import { corsConfig } from '../../config/cors.config';
+import { WebSocketThrottler } from '../../config/websocket-throttler';
 
 interface AuthenticatedSocket extends Socket {
   userId?: string;
@@ -22,10 +24,7 @@ interface AuthenticatedSocket extends Socket {
 
 @Injectable()
 @WebSocketGateway({
-  cors: {
-    origin: process.env.CLIENT_URL || 'http://localhost:3000',
-    credentials: true,
-  },
+  cors: corsConfig.websocket,
   namespace: '/notifications',
 })
 export class NotificationsGateway
@@ -40,44 +39,75 @@ export class NotificationsGateway
   constructor(
     private readonly jwtService: JwtService,
     private readonly notificationsService: NotificationsService,
-  ) {}
+    private readonly wsThrottler: WebSocketThrottler,
+  ) {
+    // Start cleanup task
+    setInterval(() => {
+      this.wsThrottler.cleanup();
+    }, 60000); // Clean up every minute
+  }
 
   afterInit(server: Server) {
     this.logger.log('Notifications WebSocket Gateway initialized');
   }
 
-  async handleConnection(client: AuthenticatedSocket) {
+  async handleConnection(client: Socket) {
+    const clientIp = client.handshake.address;
+    
+    // Check connection rate limit
+    const connectionAllowed = await this.wsThrottler.checkConnectionLimit(clientIp);
+    if (!connectionAllowed) {
+      client.emit('error', { message: 'Connection rate limit exceeded' });
+      client.disconnect();
+      return;
+    }
+
     try {
       const token = this.extractTokenFromClient(client);
       
       if (!token) {
-        this.logger.warn(`Client ${client.id} attempted connection without token`);
+        client.emit('error', { message: 'Authentication required' });
         client.disconnect();
         return;
       }
 
-      const payload = await this.jwtService.verifyAsync(token);
-      client.userId = payload.sub;
-      client.username = payload.username;
-
-
-      client.join(`user_${client.userId}`);
+      const payload = this.jwtService.verify(token);
+      const userId = payload.sub;
       
-      this.connectedClients.set(client.id, client);
+      // Check user connection limit
+      const userConnectionAllowed = await this.wsThrottler.checkUserConnectionLimit(userId);
+      if (!userConnectionAllowed) {
+        client.emit('error', { message: 'Too many connections for this user' });
+        client.disconnect();
+        return;
+      }
 
-            this.logger.log(`Client ${client.id} connected as user ${client.username} (${client.userId})`);
-
+      (client as AuthenticatedSocket).userId = userId;
+      (client as AuthenticatedSocket).username = payload.username;
       
-      const unreadCount = await this.notificationsService.getUnreadCount(client.userId!);
-      client.emit('unread_count', { count: unreadCount });
-
+      await this.wsThrottler.addConnection(userId);
+      this.connectedClients.set(client.id, client as AuthenticatedSocket);
+      
+      this.logger.log(`Client ${client.id} connected as user ${userId}`);
+      
+      client.emit('connected', {
+        message: 'Connected to notifications',
+        userId,
+        timestamp: new Date().toISOString(),
+      });
+      
     } catch (error) {
-      this.logger.error(`Authentication failed for client ${client.id}:`, error.message);
+      this.logger.error('Authentication failed:', error.message);
+      client.emit('error', { message: 'Authentication failed' });
       client.disconnect();
     }
   }
 
-  handleDisconnect(client: AuthenticatedSocket) {
+  async handleDisconnect(client: AuthenticatedSocket) {
+    if (client.userId) {
+      await this.wsThrottler.removeConnection(client.userId);
+    }
+    
     this.connectedClients.delete(client.id);
     this.logger.log(`Client ${client.id} disconnected`);
   }
@@ -88,113 +118,101 @@ export class NotificationsGateway
     return token || null;
   }
 
-  
-  @OnEvent('notification.created')
-  async handleNotificationCreated(payload: {
-    notification: NotificationResponseDto;
-    recipientId: string;
-  }) {
-    this.logger.debug(`Broadcasting new notification to user ${payload.recipientId}`);
-    
-    this.server.to(`user_${payload.recipientId}`).emit('notification.new', {
-      notification: payload.notification,
-      timestamp: new Date().toISOString(),
-    });
+  private async checkMessageRateLimit(client: AuthenticatedSocket): Promise<boolean> {
+    if (!client.userId) {
+      return false;
+    }
 
+    const allowed = await this.wsThrottler.checkMessageLimit(client.userId);
+    if (!allowed) {
+      client.emit('error', { message: 'Message rate limit exceeded' });
+      return false;
+    }
 
-    const unreadCount = await this.notificationsService.getUnreadCount(payload.recipientId);
-    this.server.to(`user_${payload.recipientId}`).emit('unread_count', { 
-      count: unreadCount 
-    });
+    return true;
   }
 
-  @OnEvent('notification.updated')
-  async handleNotificationUpdated(payload: {
-    notification: NotificationResponseDto;
-    recipientId: string;
-  }) {
-    this.logger.debug(`Broadcasting notification update to user ${payload.recipientId}`);
-    
-    this.server.to(`user_${payload.recipientId}`).emit('notification.updated', {
-      notification: payload.notification,
-      timestamp: new Date().toISOString(),
-    });
-
-    const unreadCount = await this.notificationsService.getUnreadCount(payload.recipientId);
-    this.server.to(`user_${payload.recipientId}`).emit('unread_count', { 
-      count: unreadCount 
-    });
-  }
-
-  @OnEvent('notification.bulk_updated')
-  async handleBulkNotificationUpdate(payload: {
-    recipientId: string;
-    operation: any;
-    affected: number;
-  }) {
-    this.logger.debug(`Broadcasting bulk update to user ${payload.recipientId}`);
-    
-    this.server.to(`user_${payload.recipientId}`).emit('notification.bulk_updated', {
-      operation: payload.operation,
-      affected: payload.affected,
-      timestamp: new Date().toISOString(),
-    });
-
-    const unreadCount = await this.notificationsService.getUnreadCount(payload.recipientId);
-    this.server.to(`user_${payload.recipientId}`).emit('unread_count', { 
-      count: unreadCount 
-    });
-  }
-
-  @OnEvent('notification.deleted')
-  async handleNotificationDeleted(payload: {
-    notificationId: string;
-    recipientId: string;
-  }) {
-    this.logger.debug(`Broadcasting notification deletion to user ${payload.recipientId}`);
-    
-    this.server.to(`user_${payload.recipientId}`).emit('notification.deleted', {
-      notificationId: payload.notificationId,
-      timestamp: new Date().toISOString(),
-    });
-
-
-    const unreadCount = await this.notificationsService.getUnreadCount(payload.recipientId);
-    this.server.to(`user_${payload.recipientId}`).emit('unread_count', { 
-      count: unreadCount 
-    });
-  }
-
-
-  @SubscribeMessage('join_notifications')
-  async handleJoinNotifications(
+  @SubscribeMessage('subscribe-notifications')
+  async handleSubscribeNotifications(
     @ConnectedSocket() client: AuthenticatedSocket,
-    @MessageBody() data: { userId?: string }
+    @MessageBody() data: { userId: string }
   ) {
     if (!client.userId) {
       client.emit('error', { message: 'Not authenticated' });
       return;
     }
 
-    // Users can only join their own notification room
-    if (data.userId && data.userId !== client.userId) {
-      client.emit('error', { message: 'Access denied' });
+    if (!(await this.checkMessageRateLimit(client))) {
       return;
     }
 
-    client.join(`user_${client.userId}`);
-    
-    // Send current unread count
-    const unreadCount = await this.notificationsService.getUnreadCount(client.userId!);
-    client.emit('unread_count', { count: unreadCount });
+    if (data.userId !== client.userId) {
+      client.emit('error', { message: 'Can only subscribe to own notifications' });
+      return;
+    }
 
-    client.emit('joined_notifications', { 
-      userId: client.userId,
-      timestamp: new Date().toISOString(),
-    });
+    try {
+      const roomName = `notifications_${data.userId}`;
+      client.join(roomName);
+
+      client.emit('subscribed', {
+        message: 'Subscribed to notifications',
+        userId: data.userId,
+        timestamp: new Date().toISOString(),
+      });
+
+      this.logger.debug(`User ${client.userId} subscribed to notifications`);
+
+    } catch (error) {
+      this.logger.error(`Error subscribing to notifications:`, error.message);
+      client.emit('error', { 
+        message: 'Failed to subscribe to notifications',
+        error: error.message 
+      });
+    }
   }
 
-  @SubscribeMessage('mark_notification_read')
+  @SubscribeMessage('unsubscribe-notifications')
+  async handleUnsubscribeNotifications(
+    @ConnectedSocket() client: AuthenticatedSocket,
+    @MessageBody() data: { userId: string }
+  ) {
+    if (!client.userId) {
+      client.emit('error', { message: 'Not authenticated' });
+      return;
+    }
+
+    if (!(await this.checkMessageRateLimit(client))) {
+      return;
+    }
+
+    if (data.userId !== client.userId) {
+      client.emit('error', { message: 'Can only unsubscribe from own notifications' });
+      return;
+    }
+
+    try {
+      const roomName = `notifications_${data.userId}`;
+      client.leave(roomName);
+
+      client.emit('unsubscribed', {
+        message: 'Unsubscribed from notifications',
+        userId: data.userId,
+        timestamp: new Date().toISOString(),
+      });
+
+      this.logger.debug(`User ${client.userId} unsubscribed from notifications`);
+
+    } catch (error) {
+      this.logger.error(`Error unsubscribing from notifications:`, error.message);
+      client.emit('error', { 
+        message: 'Failed to unsubscribe from notifications',
+        error: error.message 
+      });
+    }
+  }
+
+  @SubscribeMessage('mark-notification-read')
   async handleMarkNotificationRead(
     @ConnectedSocket() client: AuthenticatedSocket,
     @MessageBody() data: { notificationId: string }
@@ -204,18 +222,26 @@ export class NotificationsGateway
       return;
     }
 
+    if (!(await this.checkMessageRateLimit(client))) {
+      return;
+    }
+
     try {
       await this.notificationsService.updateNotification(
         data.notificationId,
-        client.userId!,
+        client.userId,
         { isRead: true }
       );
 
-      client.emit('notification_marked_read', {
+      client.emit('notification-marked-read', {
         notificationId: data.notificationId,
         timestamp: new Date().toISOString(),
       });
+
+      this.logger.debug(`User ${client.userId} marked notification ${data.notificationId} as read`);
+
     } catch (error) {
+      this.logger.error(`Error marking notification as read:`, error.message);
       client.emit('error', { 
         message: 'Failed to mark notification as read',
         error: error.message 
@@ -223,17 +249,29 @@ export class NotificationsGateway
     }
   }
 
-  @SubscribeMessage('get_unread_count')
-  async handleGetUnreadCount(@ConnectedSocket() client: AuthenticatedSocket) {
+  @SubscribeMessage('get-unread-count')
+  async handleGetUnreadCount(
+    @ConnectedSocket() client: AuthenticatedSocket
+  ) {
     if (!client.userId) {
       client.emit('error', { message: 'Not authenticated' });
       return;
     }
 
+    if (!(await this.checkMessageRateLimit(client))) {
+      return;
+    }
+
     try {
-      const unreadCount = await this.notificationsService.getUnreadCount(client.userId!);
-      client.emit('unread_count', { count: unreadCount });
+      const count = await this.notificationsService.getUnreadCount(client.userId);
+      
+      client.emit('unread-count', {
+        count,
+        timestamp: new Date().toISOString(),
+      });
+
     } catch (error) {
+      this.logger.error(`Error getting unread count:`, error.message);
       client.emit('error', { 
         message: 'Failed to get unread count',
         error: error.message 
@@ -242,18 +280,65 @@ export class NotificationsGateway
   }
 
   @SubscribeMessage('ping')
-  handlePing(@ConnectedSocket() client: AuthenticatedSocket) {
+  async handlePing(@ConnectedSocket() client: AuthenticatedSocket) {
+    if (!(await this.checkMessageRateLimit(client))) {
+      return;
+    }
+
     client.emit('pong', { 
       timestamp: new Date().toISOString(),
       userId: client.userId 
     });
   }
 
-  
-  async broadcastSystemNotification(notification: NotificationResponseDto) {
-    this.logger.log('Broadcasting system notification to all connected clients');
-    this.server.emit('system_notification', {
-      notification,
+  @OnEvent('notification.created')
+  async handleNotificationCreated(payload: {
+    notification: NotificationResponseDto;
+    recipientId: string;
+  }) {
+    const roomName = `notifications_${payload.recipientId}`;
+    
+    this.logger.debug(`Broadcasting notification to user ${payload.recipientId}`);
+    
+    this.server.to(roomName).emit('new-notification', {
+      notification: payload.notification,
+      timestamp: new Date().toISOString(),
+    });
+
+    // Send push notification if user is not connected
+    const userConnected = await this.getUserConnectionStatus(payload.recipientId);
+    if (!userConnected) {
+      this.logger.debug(`User ${payload.recipientId} not connected, could send push notification`);
+      // Here you could integrate with push notification service
+    }
+  }
+
+  @OnEvent('notification.updated')
+  async handleNotificationUpdated(payload: {
+    notification: NotificationResponseDto;
+    recipientId: string;
+  }) {
+    const roomName = `notifications_${payload.recipientId}`;
+    
+    this.logger.debug(`Broadcasting notification update to user ${payload.recipientId}`);
+    
+    this.server.to(roomName).emit('notification-updated', {
+      notification: payload.notification,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  @OnEvent('notification.deleted')
+  async handleNotificationDeleted(payload: {
+    notificationId: string;
+    recipientId: string;
+  }) {
+    const roomName = `notifications_${payload.recipientId}`;
+    
+    this.logger.debug(`Broadcasting notification deletion to user ${payload.recipientId}`);
+    
+    this.server.to(roomName).emit('notification-deleted', {
+      notificationId: payload.notificationId,
       timestamp: new Date().toISOString(),
     });
   }
@@ -279,5 +364,9 @@ export class NotificationsGateway
       }
     }
     return uniqueUsers.size;
+  }
+
+  getThrottlerStats() {
+    return this.wsThrottler.getStats();
   }
 } 

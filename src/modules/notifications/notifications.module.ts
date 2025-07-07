@@ -7,6 +7,7 @@ import { NotificationsController } from './notifications.controller';
 import { Notification } from '../../entities/notification.entity';
 import { User } from '../../entities/user.entity';
 import { Comment } from '../../entities/comment.entity';
+import { WebSocketThrottler } from '../../config/websocket-throttler';
 
 @Module({
   imports: [
@@ -16,14 +17,15 @@ import { Comment } from '../../entities/comment.entity';
       Comment,
     ]),
     JwtModule.register({
-      secret: process.env.JWT_SECRET || 'default-secret',
-      signOptions: { expiresIn: '24h' },
+      secret: process.env.JWT_SECRET || 'fallback-secret',
+      signOptions: { expiresIn: '1d' },
     }),
   ],
   controllers: [NotificationsController],
   providers: [
     NotificationsService,
     NotificationsGateway,
+    WebSocketThrottler,
   ],
   exports: [
     NotificationsService,

@@ -6,17 +6,22 @@ import { CommentsController } from './comments.controller';
 import { CommentThreadsGateway } from './comments-threads.gateway';
 import { Comment } from '../../entities/comment.entity';
 import { User } from '../../entities/user.entity';
+import { WebSocketThrottler } from '../../config/websocket-throttler';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Comment, User]),
     JwtModule.register({
-      secret: process.env.JWT_SECRET || 'default-secret',
-      signOptions: { expiresIn: '24h' },
+      secret: process.env.JWT_SECRET || 'fallback-secret',
+      signOptions: { expiresIn: '1d' },
     }),
   ],
   controllers: [CommentsController],
-  providers: [commentsService, CommentThreadsGateway],
+  providers: [
+    commentsService,
+    CommentThreadsGateway,
+    WebSocketThrottler,
+  ],
   exports: [
     commentsService,
     CommentThreadsGateway,

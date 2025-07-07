@@ -20,6 +20,7 @@ import {
     ApiQuery,
     ApiParam 
 } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { commentsService } from './comments.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { CreateCommentDto } from './dto/create-comment.dto';
@@ -29,6 +30,7 @@ import { ReplyQueryDto } from './dto/reply-query.dto';
 import { CommentResponseDto } from './dto/comment-response.dto';
 import { PaginatedCommentsResponseDto } from './dto/paginated-comments-response.dto';
 import { CommentStatsDto } from './dto/comments-stats.dto';
+import { customRateLimits } from '../../config/throttler.config';
 
 @ApiTags('Comments') // this decorator is used to group the comments related endpoints together
 @Controller('comments')
@@ -116,6 +118,9 @@ export class CommentsController {
   @Post()
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @Throttle({ 
+    default: customRateLimits.comments.create
+  })
   @ApiOperation({ 
     summary: 'Create a new comment',
   })
@@ -146,6 +151,9 @@ export class CommentsController {
   @Put(':id')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @Throttle({ 
+    default: customRateLimits.comments.update
+  })
   @ApiOperation({ 
     summary: 'Update a comment',
   })
@@ -182,6 +190,9 @@ export class CommentsController {
   @Delete(':id')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @Throttle({ 
+    default: customRateLimits.comments.delete
+  })
   @ApiOperation({ 
     summary: 'Delete a comment',    
   })

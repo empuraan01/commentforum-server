@@ -21,6 +21,7 @@ import {
   ApiQuery,
   ApiParam 
 } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { UpdateUserProfileDto } from './dto/update-user-profile.dto';
@@ -29,6 +30,7 @@ import { UserCommentsQueryDto } from './dto/user-comments-query.dto';
 import { UserProfileResponseDto, PublicUserProfileDto } from './dto/user-profile-response.dto';
 import { UserStatsDto } from './dto/users-stats.dto';
 import { PaginatedUserCommentsResponseDto } from './dto/paginated-user-comments-response.dto';
+import { customRateLimits } from '../../config/throttler.config';
 
 @ApiTags('users')
 @Controller('users')
@@ -57,6 +59,9 @@ export class UsersController {
   @Put('profile')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @Throttle({ 
+    default: customRateLimits.users.updateProfile
+  })
   @ApiOperation({ 
     summary: 'Update user profile',
   })
@@ -76,20 +81,23 @@ export class UsersController {
     return this.usersService.updateUserProfile(req.user.id, updateUserProfileDto);
   }
 
-  @Put('change-password')
+  @Put('password')
+  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @HttpCode(HttpStatus.NO_CONTENT)
+  @Throttle({ 
+    default: customRateLimits.users.changePassword
+  })
   @ApiOperation({ 
     summary: 'Change user password',
   })
-  @ApiResponse({ status: 204, description: 'Password changed successfully' })
-  @ApiResponse({ status: 400, description: 'Invalid password data' })
-  @ApiResponse({ status: 401, description: 'Unauthorized or invalid current password' })
+  @ApiResponse({ status: 200, description: 'Password changed successfully' })
+  @ApiResponse({ status: 400, description: 'Invalid input data' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
   @ApiResponse({ status: 404, description: 'User not found' })
   async changePassword(
     @Request() req,
-    @Body() changePasswordDto: ChangePasswordDto
-  ): Promise<void> {
+    @Body(ValidationPipe) changePasswordDto: ChangePasswordDto
+  ): Promise<{ message: string }> {
     return this.usersService.changePassword(req.user.id, changePasswordDto);
   }
 
@@ -97,6 +105,9 @@ export class UsersController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.NO_CONTENT)
+  @Throttle({ 
+    default: customRateLimits.users.deleteAccount
+  })
   @ApiOperation({ 
     summary: 'Delete user account',
   })

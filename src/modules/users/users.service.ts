@@ -122,7 +122,7 @@ export class UsersService {
     }
 
     //change password with multiple levels of checks
-    async changePassword(userId: string, changePasswordDto: ChangePasswordDto): Promise<void>{
+    async changePassword(userId: string, changePasswordDto: ChangePasswordDto): Promise<{ message: string }>{
         try{
           return this.entityManager.transaction(async (transactionalEntityManager) => {
             const user = await transactionalEntityManager.findOne(User, {
@@ -163,7 +163,7 @@ export class UsersService {
                 .where('id = :userId', { userId })
                 .execute();
 
-            return;
+            return { message: 'Password changed successfully' };
           })
         } catch(error){
             if (error instanceof NotFoundException ||

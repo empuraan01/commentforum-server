@@ -16,6 +16,8 @@ import { commentsService } from './comments.service';
 import { ThreadJoinDto } from './dto/thread-join.dto';
 import { ThreadLeaveDto } from './dto/thread-leave.dto';
 import { CommentResponseDto } from './dto/comment-response.dto';
+import { corsConfig } from '../../config/cors.config';
+import { WebSocketThrottler } from '../../config/websocket-throttler';
 
 interface AuthenticatedSocket extends Socket {
   userId?: string;
@@ -30,10 +32,7 @@ interface ThreadRoom {
 
 @Injectable()
 @WebSocketGateway({
-  cors: {
-    origin: process.env.CLIENT_URL || 'http://localhost:3000',
-    credentials: true,
-  },
+  cors: corsConfig.websocket,
   namespace: '/ws/comments',
 })
 export class CommentThreadsGateway
@@ -49,49 +48,76 @@ export class CommentThreadsGateway
   constructor(
     private readonly jwtService: JwtService,
     private readonly commentsService: commentsService,
-  ) {}
+    private readonly wsThrottler: WebSocketThrottler,
+  ) {
+    // Start cleanup task
+    setInterval(() => {
+      this.wsThrottler.cleanup();
+    }, 60000); // Clean up every minute
+  }
 
   afterInit(server: Server) {
     this.logger.log('Comment Threads WebSocket Gateway initialized');
   }
 
-  async handleConnection(client: AuthenticatedSocket) {
+  async handleConnection(client: Socket) {
+    const clientIp = client.handshake.address;
+    
+    // Check connection rate limit
+    const connectionAllowed = await this.wsThrottler.checkConnectionLimit(clientIp);
+    if (!connectionAllowed) {
+      client.emit('error', { message: 'Connection rate limit exceeded' });
+      client.disconnect();
+      return;
+    }
+
     try {
       const token = this.extractTokenFromClient(client);
       
       if (!token) {
-        this.logger.warn(`Client ${client.id} attempted connection without token`);
+        client.emit('error', { message: 'Authentication required' });
         client.disconnect();
         return;
       }
 
-      const payload = await this.jwtService.verifyAsync(token);
-      client.userId = payload.sub;
-      client.username = payload.username;
+      const payload = this.jwtService.verify(token);
+      const userId = payload.sub;
+      
+      // Check user connection limit
+      const userConnectionAllowed = await this.wsThrottler.checkUserConnectionLimit(userId);
+      if (!userConnectionAllowed) {
+        client.emit('error', { message: 'Too many connections for this user' });
+        client.disconnect();
+        return;
+      }
 
-      this.connectedClients.set(client.id, client);
-
-      this.logger.log(
-        `Client ${client.id} connected as user ${client.username} (${client.userId})`
-      );
-
+      (client as AuthenticatedSocket).userId = userId;
+      (client as AuthenticatedSocket).username = payload.username;
+      
+      await this.wsThrottler.addConnection(userId);
+      this.connectedClients.set(client.id, client as AuthenticatedSocket);
+      
+      this.logger.log(`Client ${client.id} connected as user ${userId}`);
+      
       client.emit('connected', {
         message: 'Connected to comment threads',
-        userId: client.userId,
+        userId,
         timestamp: new Date().toISOString(),
       });
-
+      
     } catch (error) {
-      this.logger.error(
-        `Authentication failed for client ${client.id}:`,
-        error.message
-      );
+      this.logger.error('Authentication failed:', error.message);
+      client.emit('error', { message: 'Authentication failed' });
       client.disconnect();
     }
   }
 
-  handleDisconnect(client: AuthenticatedSocket) {
+  async handleDisconnect(client: AuthenticatedSocket) {
     this.leaveAllThreads(client);
+    
+    if (client.userId) {
+      await this.wsThrottler.removeConnection(client.userId);
+    }
     
     this.connectedClients.delete(client.id);
     this.logger.log(`Client ${client.id} disconnected`);
@@ -101,6 +127,20 @@ export class CommentThreadsGateway
     const token = client.handshake.auth?.token || 
                   client.handshake.headers?.authorization?.replace('Bearer ', '');
     return token || null;
+  }
+
+  private async checkMessageRateLimit(client: AuthenticatedSocket): Promise<boolean> {
+    if (!client.userId) {
+      return false;
+    }
+
+    const allowed = await this.wsThrottler.checkMessageLimit(client.userId);
+    if (!allowed) {
+      client.emit('error', { message: 'Message rate limit exceeded' });
+      return false;
+    }
+
+    return true;
   }
 
   @SubscribeMessage('join-thread')
@@ -113,9 +153,13 @@ export class CommentThreadsGateway
       return;
     }
 
+    if (!(await this.checkMessageRateLimit(client))) {
+      return;
+    }
+
     try {
-      const thread = await this.commentsService.findCommentById(data.threadId);
-      if (!thread) {
+      const comment = await this.commentsService.findCommentById(data.threadId);
+      if (!comment) {
         client.emit('error', { message: 'Thread not found' });
         return;
       }
@@ -163,6 +207,10 @@ export class CommentThreadsGateway
       return;
     }
 
+    if (!(await this.checkMessageRateLimit(client))) {
+      return;
+    }
+
     try {
       const roomName = `thread_${data.threadId}`;
       client.leave(roomName);
@@ -207,6 +255,10 @@ export class CommentThreadsGateway
       return;
     }
 
+    if (!(await this.checkMessageRateLimit(client))) {
+      return;
+    }
+
     const threadRoom = this.threadRooms.get(data.threadId);
     client.emit('thread-stats', {
       threadId: data.threadId,
@@ -216,7 +268,11 @@ export class CommentThreadsGateway
   }
 
   @SubscribeMessage('ping')
-  handlePing(@ConnectedSocket() client: AuthenticatedSocket) {
+  async handlePing(@ConnectedSocket() client: AuthenticatedSocket) {
+    if (!(await this.checkMessageRateLimit(client))) {
+      return;
+    }
+
     client.emit('pong', {
       timestamp: new Date().toISOString(),
       userId: client.userId,
@@ -260,23 +316,20 @@ export class CommentThreadsGateway
   }
 
   @OnEvent('comment.updated')
-  async handleCommentEdited(payload: {
+  async handleCommentUpdated(payload: {
     comment: CommentResponseDto;
+    parentId?: string;
   }) {
     let roomName = `thread_${payload.comment.id}`;
-    this.server.to(roomName).emit('comment-edited', {
-      id: payload.comment.id,
-      updatedText: payload.comment.text,
-      updatedAt: payload.comment.updatedAt,
+    this.server.to(roomName).emit('comment-updated', {
+      comment: payload.comment,
       timestamp: new Date().toISOString(),
     });
 
-    if (payload.comment.parent?.id) {
-      roomName = `thread_${payload.comment.parent.id}`;
-      this.server.to(roomName).emit('comment-edited', {
-        id: payload.comment.id,
-        updatedText: payload.comment.text,
-        updatedAt: payload.comment.updatedAt,
+    if (payload.parentId) {
+      roomName = `thread_${payload.parentId}`;
+      this.server.to(roomName).emit('comment-updated', {
+        comment: payload.comment,
         timestamp: new Date().toISOString(),
       });
     }
@@ -360,5 +413,9 @@ export class CommentThreadsGateway
   getTotalThreadViewers(): number {
     return Array.from(this.threadRooms.values())
       .reduce((total, room) => total + room.userCount, 0);
+  }
+
+  getThrottlerStats() {
+    return this.wsThrottler.getStats();
   }
 }

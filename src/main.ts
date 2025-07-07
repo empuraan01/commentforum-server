@@ -2,6 +2,8 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
+import { corsConfig, getCorsOrigins } from './config/cors.config';
+import { ThrottlerExceptionFilter } from './common/filters/throttler-exception.filter';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -11,6 +13,9 @@ async function bootstrap() {
     forbidNonWhitelisted: true,
     transform: true,
   }));
+
+
+  app.useGlobalFilters(new ThrottlerExceptionFilter());
 
   // swagger configuration
   const config = new DocumentBuilder()
@@ -24,6 +29,10 @@ async function bootstrap() {
     
   const document = SwaggerModule.createDocument(app, config);
   SwaggerModule.setup('api', app, document);
+
+  app.enableCors(corsConfig.http);
+
+  console.log('CORS enabled for origins:', getCorsOrigins());
 
   await app.listen(process.env.PORT ?? 3000);
   
