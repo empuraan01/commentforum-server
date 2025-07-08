@@ -1,0 +1,50 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: commentforum-api
+    ports:
+      - '3000:3000'
+    depends_on:
+      - postgres
+    environment:
+      - NODE_ENV=${NODE_ENV}
+      - PORT=${PORT}
+      - DB_HOST=postgres
+      - DB_PORT=${DB_PORT}
+      - DB_USERNAME=${DB_USERNAME}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      - JWT_SECRET=${JWT_SECRET}
+      - JWT_EXPIRES_IN=${JWT_EXPIRES_IN}
+    networks:
+      - commentforum-network
+    volumes:
+      - .:/usr/src/app
+      - /usr/src/app/node_modules
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: commentforum-postgres
+    ports:
+      - '5432:5432'
+    environment:
+      - POSTGRES_USER=${DB_USERNAME}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=${DB_NAME}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - commentforum-network
+    restart: unless-stopped
+
+networks:
+  commentforum-network:
+    driver: bridge
+
+volumes:
+  postgres_data: 
